@@ -65,6 +65,8 @@ def main(options):
         new_dens = dens - sub_dens
         # Note the sign of the shift in coordinate frame is opposite the shift in the CoM.
         recenter = Vec3f(*dens.phase_cog()[:3]) - Vec3f(*new_dens.phase_cog()[:3])
+        if options.subtract_center:
+            recenter = -recenter
     else:
         recenter = None
 
@@ -162,8 +164,8 @@ def subtract(particle, dens, sub_dens, recenter=None, no_frc=False, low_cutoff=0
         t.set_rotation({'psi': meta.psi, 'phi': meta.phi, 'theta': meta.theta, 'type': 'spider'})
         shift = t.transform(recenter)
         # The change in the origin is the projection of the transformed difference vector on the new xy plane.
-        meta.x_origin += shift[0]
-        meta.y_origin += shift[1]
+        meta.x_origin += shift[0] * meta.apix
+        meta.y_origin += shift[1] * meta.apix
 
     return Result(ptcl, meta, ctfproj, ctfproj_sub, ptcl_sub, ptcl_norm_sub)
 
@@ -217,6 +219,8 @@ if __name__ == "__main__":
     parser.add_argument("--loglevel", type=str, default="WARNING", help="Logging level and debug output")
     parser.add_argument("--recenter", action="store_true", default=False,
                         help="Shift particle origin to new center of mass")
+    parser.add_argument("--subtract-center", help="Subtract instead of add center of mass shift",
+                        action="store_true")
     parser.add_argument("--original", action="store_true", default=False,
                         help="Also write original (not subtracted) particles to new image stack(s)")
     parser.add_argument("--low-cutoff", type=float, default=0.0, help="Low cutoff frequency in FRC normalization")
