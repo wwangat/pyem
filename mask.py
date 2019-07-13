@@ -23,11 +23,10 @@ import sys
 from pyem.mrc import read
 from pyem.mrc import write
 from pyem.vop import binary_sphere
-from pyem.vop import binary_volume_opening
+from pyem.vop import binary_dilate
+from pyem.vop import binarize_volume
 from scipy.interpolate import interp1d
 from scipy.ndimage import binary_closing
-from scipy.ndimage import binary_dilation
-from scipy.ndimage import binary_fill_holes
 from scipy.ndimage import distance_transform_edt
 
 
@@ -36,18 +35,20 @@ def main(args):
         print("Please provide a binarization threshold")
         return 1
     data, hdr = read(args.input, inc_header=True)
-    mask = data >= args.threshold
-    if args.minvol is not None:
-        mask = binary_volume_opening(mask, args.minvol)
-    if args.fill:
-        mask = binary_fill_holes(mask)
-    if args.extend is not None and args.extend > 0:
-        if args.relion:
-            se = binary_sphere(args.extend, False)
-            mask = binary_dilation(mask, structure=se, iterations=1)
-        else:
-            dt = distance_transform_edt(~mask)
-            mask = mask | (dt <= args.edge_width)
+    mask = binarize_volume(data, args.threshold, minvol=args.minvol, fill=args.fill)
+    if args.base_map is not None:
+        base_map = read(args.base_map, inc_header=False)
+        base_mask = binarize_volume(base_map, args.threshold, minvol=args.minvol, fill=args.fill)
+        total_width = args.extend + args.edge_width
+        excl_mask = binary_dilate(mask, args.extend+args.edge_width, strel=args.relion)
+        base_mask = binary_dilate(base_mask, args.extend, strel=args.relion)
+        base_mask = base_mask &~ excl_mask
+        if args.overlap > 0:
+            incl_mask = binary_dilate(base_mask, args.overlap, strel=args.relion) & excl_mask
+            base_mask = base_mask | incl_mask
+        mask = base_mask
+    elif args.extend > 0:
+        mask = binary_dilate(mask, args.extend, strel=args.relion)
     if args.close:
         se = binary_sphere(args.extend, False)
         mask = binary_closing(mask, structure=se, iterations=1)
@@ -66,21 +67,22 @@ def main(args):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
-            description="\n".join([
-                "The mask is generated according to the following procedure:",
-                "  1. Threshold map",
-                "  2. Optionally delete small segments",
-                "  3. Optionally fill holes",
-                "  4. Extend initial mask",
-                "  5. Optional morphological closing",
-                "  6. Add soft edge"]))
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="\n".join([
+            "The mask is generated according to the following procedure:",
+            "  1. Threshold map",
+            "  2. Optionally delete small segments",
+            "  3. Optionally fill holes",
+            "  4. Extend initial mask",
+            "  5. Optional morphological closing",
+            "  6. Add soft edge"]))
     parser.add_argument("input", help="Input volume MRC file")
     parser.add_argument("output", help="Output mask MRC file")
     parser.add_argument("--threshold", "-t", help="Threshold for initial mask",
                         type=float)
     parser.add_argument("--extend", "-e", help="Structuring element size for dilating initial mask",
-                        type=int)
+                        type=int, default=0)
     parser.add_argument("--edge-width", "-w", help="Width for soft edge",
                         type=int)
     parser.add_argument("--edge-profile", "-p", help="Soft edge profile type",
@@ -88,8 +90,10 @@ if __name__ == "__main__":
                         default="sinusoid")
     parser.add_argument("--fill", "-f", help="Flood fill initial mask",
                         action="store_true")
-    parser.add_argument("--minvol", "-m", help="Minimum volume for mask segments", type=int)
+    parser.add_argument("--minvol", "-m", help="Minimum volume for mask segments (pass -1 for largest segment only)", type=int, default=0)
     parser.add_argument("--close", "-c", help="Perform morphological closing", action="store_true")
     parser.add_argument("--relion", help="Mimics relion_mask_create output (slower)", action="store_true")
+    parser.add_argument("--base-map", "-b", help="Create and write a matched mask instead of regular output (see project wiki)")
+    parser.add_argument("--overlap", "-o", help="Overlap width for matched mask (default: %(default)d)", type=int, default=0)
     sys.exit(main(parser.parse_args()))
 

@@ -27,10 +27,10 @@ from pyem.mrc import write
 from pyem.util import euler2rot
 from pyem.util import rot2euler
 from pyem.util import vec2rot
-from pyem.vop import ismask
-from pyem.vop import resample_volume
+from pyem import vop
 from scipy.ndimage import affine_transform
 from scipy.ndimage import shift
+from scipy.ndimage import zoom
 
 
 def main(args):
@@ -50,6 +50,14 @@ def main(args):
     box = np.array([hdr[a] for a in ["nx", "ny", "nz"]])
     center = box // 2
 
+    if args.fft:
+        if args.final_mask is not None:
+            final_mask = read(args.final_mask)
+            data *= final_mask
+        data_ft = vop.vol_ft(data.T, pfac=args.pfac, threads=args.threads)
+        np.save(args.output, data_ft)
+        return 0
+
     if args.transpose is not None:
         try:
             tax = [np.int64(a) for a in args.transpose.split(",")]
@@ -61,11 +69,9 @@ def main(args):
     if args.normalize:
         if args.reference is not None:
             ref, refhdr = read(args.reference, inc_header=True)
-            sigma = np.std(ref)
+            final, mu, sigma = vop.normalize(data, ref=ref, return_stats=True)
         else:
-            sigma = np.std(data)
-
-        mu = np.mean(data)
+            final, mu, sigma = vop.normalize(data, return_stats=True)
         final = (data - mu) / sigma
         if args.verbose:
             log.info("Mean: %f, Standard deviation: %f" % (mu, sigma))
@@ -92,8 +98,8 @@ def main(args):
         args.origin = center
         log.info("Origin set to box center, %s" % (args.origin * args.apix))
 
-    if not (args.target is None and args.euler is None and args.matrix is None) \
-            and ismask(data) and args.spline_order != 0:
+    if not (args.target is None and args.euler is None and args.matrix is None and args.boxsize is None) \
+            and vop.ismask(data) and args.spline_order != 0:
         log.warn("Input looks like a mask, --spline-order 0 (nearest neighbor) is recommended")
 
     if args.matrix is not None:
@@ -102,7 +108,7 @@ def main(args):
         except:
             log.error("Matrix format is incorrect")
             return 1
-        data = resample_volume(data, r=r, t=None, ori=None, order=args.spline_order)
+        data = vop.resample_volume(data, r=r, t=None, ori=None, order=args.spline_order)
 
     if args.target is not None:
         try:
@@ -112,11 +118,11 @@ def main(args):
             return 1
         args.target -= args.origin
         args.target = np.where(np.abs(args.target) < 1, 0, args.target)
-        ori = None if args.origin is center else args.origin - args.center
+        ori = None if args.origin is center else args.origin - center
         r = vec2rot(args.target)
         t = np.linalg.norm(args.target)
         log.info("Euler angles are %s deg and shift is %f px" % (np.rad2deg(rot2euler(r)), t))
-        data = resample_volume(data, r=r, t=args.target, ori=ori, order=args.spline_order)
+        data = vop.resample_volume(data, r=r, t=args.target, ori=ori, order=args.spline_order, invert=args.target_invert)
 
     if args.euler is not None:
         try:
@@ -138,8 +144,17 @@ def main(args):
         args.translate -= args.origin
         data = shift(data, -args.translate, order=args.spline_order)
 
+    if args.boxsize is not None:
+        args.boxsize = np.double(args.boxsize)
+        data = zoom(data, args.boxsize / box, order=args.spline_order)
+        args.apix = args.apix * box[0] / args.boxsize
+
     if final is None:
         final = data
+
+    if args.final_mask is not None:
+        final_mask = read(args.final_mask)
+        final *= final_mask
 
     write(args.output, final, psz=args.apix)
     return 0
@@ -152,15 +167,21 @@ if __name__ == "__main__":
     parser.add_argument("input", help="Input volume (MRC file)")
     parser.add_argument("output", help="Output volume (MRC file)")
     parser.add_argument("--apix", "--angpix", "-a", help="Pixel size in Angstroms", type=float)
+    parser.add_argument("--mask", help="Final mask to apply after any operations", dest="final_mask")
     parser.add_argument("--transpose", help="Swap volume axes order", metavar="a1,a2,a3")
     parser.add_argument("--normalize", "-n", help="Convert map densities to Z-scores", action="store_true")
     parser.add_argument("--reference", "-r", help="Normalization reference volume (MRC file)")
+    parser.add_argument("--fft", help="Cache padded 3D FFT for projections.", action="store_true")
+    parser.add_argument("--threads", help="Thread count for FFTW", type=int, default=1)
+    parser.add_argument("--pfac", help="Padding factor for 3D FFT", type=int, default=2)
     parser.add_argument("--origin", help="Origin coordinates in Angstroms (volume center by default)", metavar="x,y,z")
     parser.add_argument("--target", help="Target pose (view axis and origin) coordinates in Angstroms", metavar="x,y,z")
+    parser.add_argument("--target-invert", help="Undo target pose transformation", action="store_true")
     parser.add_argument("--euler", help="Euler angles in degrees (Relion conventions)", metavar="phi,theta,psi")
     parser.add_argument("--translate", help="Translation coordinates in Angstroms", metavar="x,y,z")
     parser.add_argument("--matrix",
                         help="Transformation matrix (3x3 or 3x4 with translation in Angstroms) in Numpy/json format")
+    parser.add_argument("--boxsize", help="Set the output box dimensions, accounting for pixel size", type=int)
     parser.add_argument("--spline-order",
                         help="Order of spline interpolation (0 for nearest, 1 for trilinear, default is cubic)",
                         type=int, default=3, choices=np.arange(6))
