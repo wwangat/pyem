@@ -1,3 +1,10 @@
+#!/usr/bin/env python2.7
+# Written by Wei Wang in HKUST
+# wwangat@gmail.com
+
+# function: extract principal components from cryoSPARC metafile
+# usage: python extract_pca_components.py -f temp.cs -o temp.dat -n 3
+
 import numpy as np
 from optparse import OptionParser
 
